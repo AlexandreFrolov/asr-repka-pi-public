@@ -11,7 +11,7 @@ SAMPLE_RATE = 22050
 CHANNELS = 1
 DTYPE = "int16"
 
-BLOCKSIZE = 2048               # ⬅ больше буфер
+BLOCKSIZE = 2048
 BYTES_PER_SAMPLE = 2
 
 def speak_from_file(text_path: Path):
@@ -24,7 +24,6 @@ def speak_from_file(text_path: Path):
         print("❌ Файл пустой", file=sys.stderr)
         sys.exit(1)
 
-    # 🔊 Явно используем PulseAudio
     sd.default.device = "pulse"
     sd.default.samplerate = SAMPLE_RATE
     sd.default.channels = CHANNELS
@@ -48,7 +47,7 @@ def speak_from_file(text_path: Path):
         channels=CHANNELS,
         dtype=DTYPE,
         blocksize=BLOCKSIZE,
-        latency="high"           # ⬅ КЛЮЧЕВО
+        latency="high" 
     ) as stream:
 
         stream.start()
