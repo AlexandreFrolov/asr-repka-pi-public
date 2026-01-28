@@ -1,5 +1,8 @@
+#!/usr/bin/env python3
 import subprocess
 import sounddevice as sd
+import sys
+from pathlib import Path
 
 PIPER_BIN = "piper"
 MODEL = "/root/piper-voices/ru/ru_RU-irina-medium.onnx"
@@ -7,9 +10,24 @@ MODEL = "/root/piper-voices/ru/ru_RU-irina-medium.onnx"
 SAMPLE_RATE = 22050
 CHANNELS = 1
 DTYPE = "int16"
-BLOCKSIZE = 1024  # ✔ корректный аудиоблок
+BLOCKSIZE = 1024               # фреймы
+BYTES_PER_SAMPLE = 2           # int16
 
-def speak(text: str):
+def speak_from_file(text_path: Path):
+    if not text_path.exists():
+        print(f"❌ Файл не найден: {text_path}", file=sys.stderr)
+        sys.exit(1)
+
+    text = text_path.read_text(encoding="utf-8").strip()
+    if not text:
+        print("❌ Файл пустой", file=sys.stderr)
+        sys.exit(1)
+
+    # 🔴 ВАЖНО: явно используем PulseAudio
+    sd.default.device = "pulse"
+    sd.default.samplerate = SAMPLE_RATE
+    sd.default.channels = CHANNELS
+
     proc = subprocess.Popen(
         [
             PIPER_BIN,
@@ -34,13 +52,30 @@ def speak(text: str):
         stream.start()
 
         while True:
-            data = proc.stdout.read(BLOCKSIZE * 2)  # int16 = 2 байта
+            data = proc.stdout.read(BLOCKSIZE * BYTES_PER_SAMPLE)
             if not data:
                 break
+
+            # гарантируем, что chunk кратен размеру фрейма
+            if len(data) % BYTES_PER_SAMPLE != 0:
+                data = data[:-(len(data) % BYTES_PER_SAMPLE)]
+
             stream.write(data)
 
     proc.wait()
 
-if __name__ == "__main__":
-    speak("Привет, Репка Пи. Проверка потокового синтеза.")
 
+def main():
+    if len(sys.argv) != 2:
+        print(
+            f"Использование:\n"
+            f"  {sys.argv[0]} <путь_к_текстовому_файлу>",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    speak_from_file(Path(sys.argv[1]))
+
+
+if __name__ == "__main__":
+    main()
