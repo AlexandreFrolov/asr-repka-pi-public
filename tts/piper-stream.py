@@ -10,8 +10,9 @@ MODEL = "/root/piper-voices/ru/ru_RU-irina-medium.onnx"
 SAMPLE_RATE = 22050
 CHANNELS = 1
 DTYPE = "int16"
-BLOCKSIZE = 1024               # фреймы
-BYTES_PER_SAMPLE = 2           # int16
+
+BLOCKSIZE = 2048               # ⬅ больше буфер
+BYTES_PER_SAMPLE = 2
 
 def speak_from_file(text_path: Path):
     if not text_path.exists():
@@ -23,7 +24,7 @@ def speak_from_file(text_path: Path):
         print("❌ Файл пустой", file=sys.stderr)
         sys.exit(1)
 
-    # 🔴 ВАЖНО: явно используем PulseAudio
+    # 🔊 Явно используем PulseAudio
     sd.default.device = "pulse"
     sd.default.samplerate = SAMPLE_RATE
     sd.default.channels = CHANNELS
@@ -46,18 +47,19 @@ def speak_from_file(text_path: Path):
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype=DTYPE,
-        blocksize=BLOCKSIZE
+        blocksize=BLOCKSIZE,
+        latency="high"           # ⬅ КЛЮЧЕВО
     ) as stream:
 
         stream.start()
 
         while True:
-            data = proc.stdout.read(BLOCKSIZE * BYTES_PER_SAMPLE)
+            data = proc.stdout.read(BLOCKSIZE * BYTES_PER_SAMPLE * 2)
             if not data:
                 break
 
-            # гарантируем, что chunk кратен размеру фрейма
-            if len(data) % BYTES_PER_SAMPLE != 0:
+            # выравнивание под int16
+            if len(data) % BYTES_PER_SAMPLE:
                 data = data[:-(len(data) % BYTES_PER_SAMPLE)]
 
             stream.write(data)
