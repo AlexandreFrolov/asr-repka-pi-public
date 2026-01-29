@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", message="Exception ignored from cffi callback")
 import time
 import numpy as np
 import sounddevice as sd
@@ -36,9 +38,11 @@ def play_audio(text: str):
             print(f"Частота дискретизации: {samplerate} Hz")
             print(f"Тип данных: {audio_data.dtype}")
             
-            # Воспроизводим аудио
-            sd.play(audio_data, samplerate)
-            sd.wait()
+            # Воспроизводим аудио через OutputStream (менее подвержено ошибкам)
+            with sd.OutputStream(samplerate=samplerate, 
+                               channels=1,  # моно аудио
+                               dtype='int16') as stream:
+                stream.write(audio_data)
             
     except Exception as e:
         print(f"Ошибка при воспроизведении: {e}")
