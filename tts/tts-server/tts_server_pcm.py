@@ -1,48 +1,55 @@
-import subprocess
-from flask import Flask, request, Response, stream_with_context
-import tempfile
-import os
+import time
+import numpy as np
+import sounddevice as sd
+from fastapi import FastAPI, BackgroundTasks
+from pydantic import BaseModel
+from piper import PiperVoice
 
-PIPER_BIN = "piper"
-MODEL_PATH = "/root/piper-voices/ru/ru_RU-irina-medium.onnx"
+# Настройки модели
+MODEL_PATH = "ru_RU-irina-medium.onnx"
+CONFIG_PATH = "ru_RU-irina-medium.onnx.json"
 
-app = Flask(__name__)
+# Инициализация модели
+voice = PiperVoice.load(MODEL_PATH, config_path=CONFIG_PATH)
 
-@app.route("/tts_stream", methods=["POST"])
-def tts_stream():
-    text = request.json.get("text", "").strip()
-    if not text:
-        return "Text is empty", 400
+app = FastAPI()
 
-    # Разбиваем текст на короткие фрагменты (по точкам)
-    fragments = [s.strip() for s in text.replace("!", ".").replace("?", ".").split(".") if s.strip()]
+class TTSRequest(BaseModel):
+    text: str
 
-    def generate():
-        for frag in fragments:
-            # создаём временный WAV
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-                wav_path = f.name
+def play_audio(text: str):
+    """Быстрый синтез без перезагрузки модели"""
+    try:
+        samplerate = voice.config.sample_rate
+        
+        # Собираем аудиоданные в список numpy массивов
+        audio_chunks = []
+        for audio_chunk in voice.synthesize(text):
+            # Используем audio_int16_array, который содержит аудио данные в формате int16
+            audio_chunks.append(audio_chunk.audio_int16_array)
+        
+        if audio_chunks:
+            # Объединяем все чанки в один массив
+            audio_data = np.concatenate(audio_chunks)
+            
+            print(f"Размер аудио данных: {len(audio_data)} samples")
+            print(f"Частота дискретизации: {samplerate} Hz")
+            print(f"Тип данных: {audio_data.dtype}")
+            
+            # Воспроизводим аудио
+            sd.play(audio_data, samplerate)
+            sd.wait()
+            
+    except Exception as e:
+        print(f"Ошибка при воспроизведении: {e}")
+        import traceback
+        traceback.print_exc()
 
-            cmd = [
-                PIPER_BIN,
-                "--model", MODEL_PATH,
-                "--voice", "irina",
-                "--text", frag,
-                "--output_file", wav_path
-            ]
-            subprocess.run(cmd, check=True)
-
-            # читаем WAV и отдаём клиенту
-            with open(wav_path, "rb") as f:
-                while True:
-                    chunk = f.read(4096)
-                    if not chunk:
-                        break
-                    yield chunk
-
-            os.remove(wav_path)
-
-    return Response(stream_with_context(generate()), mimetype="application/octet-stream")
+@app.post("/say")
+async def say_text(request: TTSRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(play_audio, request.text)
+    return {"status": "processing", "text": request.text}
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
