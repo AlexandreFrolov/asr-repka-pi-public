@@ -8,6 +8,7 @@ import warnings
 import threading
 import queue
 from typing import Optional
+import re
 
 # Игнорируем предупреждения от sounddevice
 warnings.filterwarnings("ignore", message="Exception ignored from cffi callback")
@@ -31,6 +32,21 @@ samplerate = voice.config.sample_rate
 class TTSRequest(BaseModel):
     text: str
 
+def preprocess_text(text: str) -> str:
+    """
+    Предобработка текста аналогично тому, как это делает Piper CLI.
+    Основная идея: передавать текст построчно, как при чтении из файла.
+    """
+    # 1. Разбиваем текст на строки (как при чтении из файла)
+    lines = text.split('\n')
+    
+    # 2. Убираем пустые строки и пробелы в начале/конце
+    lines = [line.strip() for line in lines if line.strip()]
+    
+    # 3. Возвращаем обратно, объединяя символом новой строки
+    #    Это важно: Piper CLI обрабатывает каждую строку отдельно
+    return '\n'.join(lines)
+
 def init_audio_stream():
     """Инициализация аудиопотока при запуске"""
     global audio_stream, samplerate
@@ -45,15 +61,13 @@ def init_audio_stream():
         
         print(f"Инициализация аудиопотока с samplerate={samplerate}")
         
-        # Увеличиваем буферы для предотвращения underrun
+        # Настройки для стабильного воспроизведения
         audio_stream = sd.OutputStream(
             samplerate=samplerate, 
             channels=1,
             dtype='int16',
-            blocksize=4096,  # Увеличиваем размер буфера
-            latency='high',
-            device=None,  # Используем устройство по умолчанию
-            extra_settings=None
+            blocksize=4096,
+            latency='high'
         )
         audio_stream.start()
         
@@ -68,14 +82,13 @@ def audio_worker():
     
     while not stop_worker:
         try:
-            # Ждем следующую фразу для воспроизведения
             text = audio_queue.get(timeout=0.1)
             
-            if text is None:  # Сигнал завершения
+            if text is None:
                 break
                 
             is_playing = True
-            synthesize_and_play(text)
+            synthesize_and_play_line_by_line(text)
             is_playing = False
             audio_queue.task_done()
             
@@ -87,108 +100,106 @@ def audio_worker():
             traceback.print_exc()
             is_playing = False
 
-def synthesize_and_play(text: str):
-    """Синтез и воспроизведение одной фразы"""
+def synthesize_and_play_line_by_line(text: str):
+    """Синтез и воспроизведение построчно (как в Piper CLI)"""
     global audio_stream, samplerate
     
     try:
-        # Нормализация текста перед синтезом
-        normalized_text = normalize_text(text)
+        # Предобрабатываем текст
+        processed_text = preprocess_text(text)
         
-        # Проверяем и переинициализируем поток если нужно
+        # Разбиваем на строки
+        lines = processed_text.split('\n')
+        
+        if not lines:
+            return
+        
+        # Проверяем аудиопоток
         if audio_stream is None or not audio_stream.active:
             init_audio_stream()
             if audio_stream is None:
                 print("Не удалось инициализировать аудиопоток")
                 return
         
-        # Синтезируем аудио
-        audio_chunks = []
-        for audio_chunk in voice.synthesize(normalized_text):
-            audio_chunks.append(audio_chunk.audio_int16_array)
+        # Синтезируем и воспроизводим каждую строку отдельно
+        all_audio_chunks = []
         
-        if not audio_chunks:
+        for line_num, line in enumerate(lines):
+            print(f"Синтез строки {line_num + 1}: '{line}'")
+            
+            # Синтезируем текущую строку
+            line_audio_chunks = []
+            for audio_chunk in voice.synthesize(line):
+                line_audio_chunks.append(audio_chunk.audio_int16_array)
+            
+            if not line_audio_chunks:
+                continue
+            
+            # Объединяем чанки для этой строки
+            line_audio = np.concatenate(line_audio_chunks)
+            
+            # Добавляем паузу между строками (кроме последней)
+            if line_num < len(lines) - 1:
+                pause_samples = int(0.05 * samplerate)  # 50 мс паузы
+                pause = np.zeros(pause_samples, dtype=np.int16)
+                line_audio = np.concatenate([line_audio, pause])
+            
+            all_audio_chunks.append(line_audio)
+        
+        if not all_audio_chunks:
             return
         
-        # Объединяем чанки
-        audio_data = np.concatenate(audio_chunks)
+        # Объединяем все строки
+        audio_data = np.concatenate(all_audio_chunks)
         
-        # Добавляем тишину для предотвращения обрезания
-        silence_samples = int(0.02 * samplerate)  # 20 мс тишины
+        # Добавляем небольшие паузы в начале и конце
+        silence_samples = int(0.02 * samplerate)
+        silence = np.zeros(silence_samples, dtype=np.int16)
+        audio_data = np.concatenate([silence, audio_data, silence])
         
-        if silence_samples > 0:
-            silence = np.zeros(silence_samples, dtype=np.int16)
-            audio_data = np.concatenate([silence, audio_data, silence])
+        print(f"Общий размер аудио: {len(audio_data)} samples")
         
-        print(f"Воспроизведение: '{text}'")
-        print(f"Размер аудио данных: {len(audio_data)} samples")
-        print(f"Частота дискретизации: {samplerate} Hz")
-        
-        # Разбиваем на чанки для плавного воспроизведения
-        chunk_size = 4096
-        total_samples = len(audio_data)
-        
-        for i in range(0, total_samples, chunk_size):
-            if audio_stream is None or not audio_stream.active:
-                break
+        # Воспроизводим
+        try:
+            # Разбиваем на блоки
+            block_size = 4096
+            total_samples = len(audio_data)
+            
+            for i in range(0, total_samples, block_size):
+                if audio_stream is None or not audio_stream.active:
+                    break
+                    
+                end_idx = min(i + block_size, total_samples)
+                chunk = audio_data[i:end_idx]
                 
-            end_idx = min(i + chunk_size, total_samples)
-            chunk = audio_data[i:end_idx]
-            
-            # Дополняем последний чанк если нужно
-            if len(chunk) < chunk_size:
-                padding = np.zeros(chunk_size - len(chunk), dtype=np.int16)
-                chunk = np.concatenate([chunk, padding])
-            
-            try:
+                # Дополняем последний блок
+                if len(chunk) < block_size:
+                    padding = np.zeros(block_size - len(chunk), dtype=np.int16)
+                    chunk = np.concatenate([chunk, padding])
+                
                 audio_stream.write(chunk)
-            except Exception as e:
-                print(f"Ошибка при записи в аудиопоток: {e}")
-                # Переинициализируем поток
-                init_audio_stream()
-                # Пропускаем этот чанк
-                continue
-        
+                
+        except Exception as e:
+            print(f"Ошибка при воспроизведении: {e}")
+            init_audio_stream()
+            
     except Exception as e:
-        print(f"Ошибка при синтезе или воспроизведении: {e}")
+        print(f"Ошибка при синтезе: {e}")
         import traceback
         traceback.print_exc()
 
-def normalize_text(text: str) -> str:
-    """Нормализация текста для лучшего синтеза"""
-    import re
-    
-    # Заменяем длинное тире на короткое
-    text = text.replace('—', '-').replace('–', '-')
-    
-    # Убираем лишние пробелы и переносы строк
-    text = re.sub(r'\s+', ' ', text.strip())
-    
-    # Добавляем пробелы после знаков препинания, если их нет
-    text = re.sub(r'([.,!?:;])(?=[^\s])', r'\1 ', text)
-    
-    # Особый случай для "Привет!" - убедимся, что он правильно интерпретируется
-    if 'Привет!' in text:
-        # Заменяем восклицательный знак после слова, если нужно
-        text = text.replace('Привет!', 'Привет !')
-    
-    return text
-
 def play_audio(text: str):
     """Добавление текста в очередь на воспроизведение"""
-    # Проверяем и инициализируем поток если нужно
     global audio_stream
     if audio_stream is None or not audio_stream.active:
         init_audio_stream()
     
-    # Добавляем текст в очередь, если он не пустой
     if text and text.strip():
         audio_queue.put(text)
 
 @app.post("/say")
 async def say_text(request: TTSRequest, background_tasks: BackgroundTasks):
     """Обработка запроса на синтез речи"""
-    # Добавляем задачу в фоновые задачи
     background_tasks.add_task(play_audio, request.text)
     return {"status": "processing", "text": request.text}
 
@@ -197,15 +208,12 @@ async def startup_event():
     """Инициализация при запуске сервера"""
     print("Инициализация сервера TTS...")
     
-    # Инициализируем аудиопоток
     init_audio_stream()
     
-    # Запускаем фоновый рабочий поток для воспроизведения
     audio_thread = threading.Thread(target=audio_worker, daemon=True)
     audio_thread.start()
     
     print(f"Сервер TTS запущен. Частота дискретизации: {samplerate} Hz")
-    print(f"Используется модель: {MODEL_PATH}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -213,11 +221,8 @@ async def shutdown_event():
     print("Завершение работы сервера TTS...")
     
     global stop_worker, audio_stream
-    
-    # Останавливаем фоновый поток
     stop_worker = True
     
-    # Останавливаем аудиопоток
     if audio_stream is not None:
         try:
             audio_stream.stop()
