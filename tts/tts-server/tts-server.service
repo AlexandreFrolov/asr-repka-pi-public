@@ -1,0 +1,34 @@
+[Unit]
+Description=TTS Server for speech synthesis
+After=network.target sound.target
+Requires=sound.target
+Documentation=https://github.com/rhasspy/piper
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/tts-server
+ExecStart=/usr/bin/python3 /root/tts-server/tts_server_pcm.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tts-server
+
+# Ограничения ресурсов
+MemoryMax=512M
+CPUQuota=200%
+
+# Окружение для работы с аудио
+Environment="XDG_RUNTIME_DIR=/run/user/0"
+Environment="PULSE_RUNTIME_PATH=/run/user/0/pulse"
+
+# Настройки безопасности
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/root/tts-server
+
+[Install]
+WantedBy=multi-user.target
