@@ -9,7 +9,6 @@ User=root
 Group=audio
 WorkingDirectory=/root/tts-server
 
-# ТОЛЬКО эти переменные 
 Environment="PULSE_SERVER=unix:/run/user/0/pulse/native"
 Environment="PULSE_COOKIE=/run/user/0/pulse/cookie"
 
@@ -19,7 +18,6 @@ ExecStart=/usr/bin/python3 /root/tts-server/tts_server_pcm.py
 Restart=on-failure
 RestartSec=5
 
-# Никаких ограничений
 NoNewPrivileges=no
 PrivateTmp=no
 ProtectSystem=no
