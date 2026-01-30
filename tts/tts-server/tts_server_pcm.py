@@ -31,7 +31,7 @@ samplerate = voice.config.sample_rate
 
 class TTSRequest(BaseModel):
     text: str
-
+ 
 def preprocess_text(text: str) -> str:
     """
     Предобработка текста аналогично тому, как это делает Piper CLI.
