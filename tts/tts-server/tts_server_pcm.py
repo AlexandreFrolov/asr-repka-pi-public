@@ -61,17 +61,23 @@ def init_audio_stream():
         
         print(f"Инициализация аудиопотока с samplerate={samplerate}")
         
-        # Настройки для стабильного воспроизведения
+        # Увеличиваем блоки и буфер для предотвращения underrun
         audio_stream = sd.OutputStream(
             samplerate=samplerate, 
             channels=1,
             dtype='int16',
-            blocksize=4096,
-            latency='high'
+            blocksize=8192,  # Увеличили в 2 раза
+            latency='high',
+            extra_settings=None
         )
         audio_stream.start()
         
-        print(f"Аудиопоток инициализирован успешно")
+        # Заполняем буфер тишиной для предотвращения underrun
+        fill_buffer_samples = 8192  # Заполняем полный блок
+        silence = np.zeros(fill_buffer_samples, dtype=np.int16)
+        audio_stream.write(silence)
+        
+        print(f"Аудиопоток инициализирован успешно с blocksize=8192")
     except Exception as e:
         print(f"Ошибка при инициализации аудиопотока: {e}")
         audio_stream = None
@@ -159,10 +165,9 @@ def synthesize_and_play_line_by_line(text: str):
         
         print(f"Общий размер аудио: {len(audio_data)} samples")
         
-        # Воспроизводим
+        # Воспроизводим с небольшими чанками для плавности
         try:
-            # Разбиваем на блоки
-            block_size = 4096
+            block_size = 2048  # Уменьшенный размер блока для плавности
             total_samples = len(audio_data)
             
             for i in range(0, total_samples, block_size):
